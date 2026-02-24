@@ -59,20 +59,18 @@ struct VPNStatusIconApp: App {
 
     @ViewBuilder
     private var statusSection: some View {
-        HStack {
-            Circle()
-                .fill(statusColor)
-                .frame(width: 8, height: 8)
-            Text(monitor.state.rawValue)
-        }
+        let stateLabel = monitor.state == .connected ? "● \(monitor.state.rawValue)" : "○ \(monitor.state.rawValue)"
+        Button(stateLabel) {}
 
         if let ip = monitor.ipAddress {
-            Text("IP: \(ip)")
-                .font(.system(.body, design: .monospaced))
+            Button("IP: \(ip)") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(ip, forType: .string)
+            }
         }
 
         if let since = monitor.connectedSince, monitor.state == .connected {
-            Text("Connected: \(formattedDuration(since: since))")
+            Button("Connected: \(formattedDuration(since: since))") {}
         }
     }
 

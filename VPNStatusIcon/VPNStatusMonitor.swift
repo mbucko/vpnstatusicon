@@ -14,6 +14,7 @@ final class VPNStatusMonitor: ObservableObject {
     @Published var state: VPNState = .unknown
     @Published var ipAddress: String?
     @Published var connectedSince: Date?
+    @Published var userWantsDisconnected = false
 
     private var timer: Timer?
     private let serviceName = "ExpressVPN Lightway"
@@ -33,8 +34,8 @@ final class VPNStatusMonitor: ObservableObject {
     }
 
     func connect() {
+        userWantsDisconnected = false
         runProcess("/usr/sbin/scutil", arguments: ["--nc", "start", serviceName])
-        // Check immediately after triggering
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.checkStatus()
@@ -43,6 +44,7 @@ final class VPNStatusMonitor: ObservableObject {
     }
 
     func disconnect() {
+        userWantsDisconnected = true
         runProcess("/usr/sbin/scutil", arguments: ["--nc", "stop", serviceName])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             Task { @MainActor [weak self] in
@@ -54,6 +56,11 @@ final class VPNStatusMonitor: ObservableObject {
     func checkStatus() {
         let output = runProcess("/usr/sbin/scutil", arguments: ["--nc", "status", serviceName])
         parseStatus(output)
+
+        // If user wants disconnected but on-demand reconnected, stop it again
+        if userWantsDisconnected && state == .connected {
+            runProcess("/usr/sbin/scutil", arguments: ["--nc", "stop", serviceName])
+        }
     }
 
     @discardableResult
