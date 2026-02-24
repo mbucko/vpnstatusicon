@@ -15,19 +15,37 @@ struct VPNStatusIconApp: App {
     }
 
     private var menuBarIcon: some View {
-        Group {
-            switch monitor.state {
-            case .connected:
-                Image(systemName: "shield.checkered")
-            case .disconnected, .unknown:
-                Image(systemName: "shield.slash")
-            case .connecting, .disconnecting:
-                Image(systemName: "shield.lefthalf.filled")
+        Image(nsImage: menuBarNSImage)
+            .onAppear {
+                monitor.startMonitoring()
             }
+    }
+
+    private var menuBarNSImage: NSImage {
+        let symbolName: String
+        let color: NSColor
+
+        switch monitor.state {
+        case .connected:
+            symbolName = "shield.checkered"
+            color = .systemGreen
+        case .disconnected:
+            symbolName = "shield.slash"
+            color = .systemRed
+        case .connecting, .disconnecting:
+            symbolName = "shield.lefthalf.filled"
+            color = .systemYellow
+        case .unknown:
+            symbolName = "shield.slash"
+            color = .secondaryLabelColor
         }
-        .onAppear {
-            monitor.startMonitoring()
-        }
+
+        let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "VPN Status")?
+            .withSymbolConfiguration(config) ?? NSImage()
+        let coloredImage = image.image(with: color)
+        coloredImage.isTemplate = false
+        return coloredImage
     }
 
     @ViewBuilder
@@ -128,5 +146,17 @@ struct VPNStatusIconApp: App {
             return "\(hours)h \(minutes)m"
         }
         return "\(minutes)m"
+    }
+}
+
+extension NSImage {
+    func image(with tintColor: NSColor) -> NSImage {
+        let image = self.copy() as! NSImage
+        image.lockFocus()
+        tintColor.set()
+        let imageRect = NSRect(origin: .zero, size: image.size)
+        imageRect.fill(using: .sourceAtop)
+        image.unlockFocus()
+        return image
     }
 }

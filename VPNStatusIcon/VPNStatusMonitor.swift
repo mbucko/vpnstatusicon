@@ -104,19 +104,24 @@ final class VPNStatusMonitor: ObservableObject {
             return
         }
 
-        // Parse additional fields from the key-value output
+        // Parse IP: look for "0 : <ip>" line right after "Addresses : <array> {"
+        var inAddresses = false
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            if trimmed.hasPrefix("IPv4.Addresses[0]") {
-                // Format: "IPv4.Addresses[0] : 100.64.100.2"
-                if let value = trimmed.components(separatedBy: " : ").last {
-                    ipAddress = value.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("Addresses : <array>") {
+                inAddresses = true
+                continue
+            }
+            if inAddresses {
+                // Line like "0 : 100.64.100.2"
+                if trimmed.hasPrefix("0 : ") {
+                    ipAddress = String(trimmed.dropFirst(4))
                 }
+                inAddresses = false
             }
 
             if trimmed.hasPrefix("LastStatusChangeTime") {
-                // Format: "LastStatusChangeTime : 02/24/2026 17:00:00"
                 if let value = trimmed.components(separatedBy: " : ").last?.trimmingCharacters(in: .whitespaces) {
                     connectedSince = parseDate(value)
                 }
