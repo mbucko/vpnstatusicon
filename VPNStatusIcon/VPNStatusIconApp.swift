@@ -5,6 +5,8 @@ import ServiceManagement
 struct VPNStatusIconApp: App {
     @StateObject private var monitor = VPNStatusMonitor()
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @AppStorage("showLocalIP") private var showLocalIP = false
+    @AppStorage("showPublicIP") private var showPublicIP = false
 
     var body: some Scene {
         MenuBarExtra {
@@ -14,11 +16,27 @@ struct VPNStatusIconApp: App {
         }
     }
 
+    private var menuBarLabel: String? {
+        var parts: [String] = []
+        if showLocalIP, let ip = monitor.localIP {
+            parts.append(ip)
+        }
+        if showPublicIP, let ip = monitor.publicIP {
+            parts.append(ip)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " | ")
+    }
+
     private var menuBarIcon: some View {
-        Image(nsImage: menuBarNSImage)
-            .onAppear {
-                monitor.startMonitoring()
+        HStack(spacing: 4) {
+            if let label = menuBarLabel {
+                Text(label)
             }
+            Image(nsImage: menuBarNSImage)
+        }
+        .onAppear {
+            monitor.startMonitoring()
+        }
     }
 
     private var menuBarNSImage: NSImage {
@@ -117,6 +135,11 @@ struct VPNStatusIconApp: App {
                     launchAtLogin = !newValue
                 }
             }
+
+        Menu("Settings") {
+            Toggle("Show Local IP in Menu Bar", isOn: $showLocalIP)
+            Toggle("Show Public IP in Menu Bar", isOn: $showPublicIP)
+        }
 
         Divider()
 
