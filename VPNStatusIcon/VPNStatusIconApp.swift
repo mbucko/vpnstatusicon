@@ -31,7 +31,7 @@ struct VPNStatusIconApp: App {
             color = .systemGreen
         case .disconnected:
             symbolName = "shield.slash"
-            color = .systemRed
+            color = .white
         case .connecting, .disconnecting:
             symbolName = "shield.lefthalf.filled"
             color = .systemYellow
@@ -59,8 +59,8 @@ struct VPNStatusIconApp: App {
 
     @ViewBuilder
     private var statusSection: some View {
-        let stateLabel = monitor.state == .connected ? "● \(monitor.state.rawValue)" : "○ \(monitor.state.rawValue)"
-        Button(stateLabel) {}
+        let stateEmoji = monitor.state == .connected ? "🟢" : "🔴"
+        Button("\(stateEmoji) \(monitor.state.rawValue)") {}
 
         if let ip = monitor.ipAddress {
             Button("IP: \(ip)") {

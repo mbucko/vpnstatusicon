@@ -17,51 +17,96 @@ final class VPNStatusMonitor: ObservableObject {
     @Published var userWantsDisconnected = false
 
     private var timer: Timer?
+    private var disconnectEnforcerTimer: Timer?
     private let serviceName = "ExpressVPN Lightway"
+
+    private static let normalInterval: TimeInterval = 3.0
+    private static let enforcerInterval: TimeInterval = 0.5
 
     func startMonitoring() {
         checkStatus()
-        timer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.checkStatus()
-            }
-        }
+        startNormalTimer()
     }
 
     func stopMonitoring() {
         timer?.invalidate()
         timer = nil
+        disconnectEnforcerTimer?.invalidate()
+        disconnectEnforcerTimer = nil
     }
 
     func connect() {
         userWantsDisconnected = false
+        stopEnforcer()
         runProcess("/usr/sbin/scutil", arguments: ["--nc", "start", serviceName])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            Task { @MainActor [weak self] in
-                self?.checkStatus()
-            }
-        }
+        scheduleCheck(after: 0.5)
     }
 
     func disconnect() {
         userWantsDisconnected = true
         runProcess("/usr/sbin/scutil", arguments: ["--nc", "stop", serviceName])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        startEnforcer()
+        scheduleCheck(after: 0.5)
+    }
+
+    func checkStatus() {
+        let output = runProcess("/usr/sbin/scutil", arguments: ["--nc", "status", serviceName])
+        parseStatus(output)
+    }
+
+    // MARK: - Disconnect enforcer
+
+    /// Rapid timer that keeps killing the VPN when on-demand reconnects
+    private func startEnforcer() {
+        disconnectEnforcerTimer?.invalidate()
+        disconnectEnforcerTimer = Timer.scheduledTimer(withTimeInterval: Self.enforcerInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.enforceDisconnect()
+            }
+        }
+    }
+
+    private func stopEnforcer() {
+        disconnectEnforcerTimer?.invalidate()
+        disconnectEnforcerTimer = nil
+    }
+
+    private func enforceDisconnect() {
+        let output = runProcess("/usr/sbin/scutil", arguments: ["--nc", "status", serviceName])
+        let firstLine = output.components(separatedBy: "\n").first?.trimmingCharacters(in: .whitespaces) ?? ""
+
+        if firstLine == "Connected" || firstLine == "Connecting" {
+            runProcess("/usr/sbin/scutil", arguments: ["--nc", "stop", serviceName])
+        }
+
+        parseStatus(output)
+    }
+
+    // MARK: - Timers
+
+    private func startNormalTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: Self.normalInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.checkStatus()
+                // Catch late on-demand reconnects even after enforcer stops
+                if self.userWantsDisconnected && (self.state == .connected || self.state == .connecting) {
+                    self.runProcess("/usr/sbin/scutil", arguments: ["--nc", "stop", self.serviceName])
+                }
+            }
+        }
+    }
+
+    private func scheduleCheck(after delay: TimeInterval) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             Task { @MainActor [weak self] in
                 self?.checkStatus()
             }
         }
     }
 
-    func checkStatus() {
-        let output = runProcess("/usr/sbin/scutil", arguments: ["--nc", "status", serviceName])
-        parseStatus(output)
-
-        // If user wants disconnected but on-demand reconnected, stop it again
-        if userWantsDisconnected && state == .connected {
-            runProcess("/usr/sbin/scutil", arguments: ["--nc", "stop", serviceName])
-        }
-    }
+    // MARK: - Process
 
     @discardableResult
     private func runProcess(_ path: String, arguments: [String]) -> String {
@@ -82,6 +127,8 @@ final class VPNStatusMonitor: ObservableObject {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
     }
+
+    // MARK: - Parsing
 
     private func parseStatus(_ output: String) {
         let lines = output.components(separatedBy: "\n")
@@ -121,7 +168,6 @@ final class VPNStatusMonitor: ObservableObject {
                 continue
             }
             if inAddresses {
-                // Line like "0 : 100.64.100.2"
                 if trimmed.hasPrefix("0 : ") {
                     ipAddress = String(trimmed.dropFirst(4))
                 }
@@ -137,14 +183,12 @@ final class VPNStatusMonitor: ObservableObject {
     }
 
     private func parseDate(_ string: String) -> Date? {
-        // scutil outputs dates like "02/24/2026 17:00:00"
         let formatter = DateFormatter()
         formatter.dateFormat = "MM/dd/yyyy HH:mm:ss"
         formatter.locale = Locale(identifier: "en_US_POSIX")
         if let date = formatter.date(from: string) {
             return date
         }
-        // Also try ISO-ish formats
         let iso = DateFormatter()
         iso.dateFormat = "yyyy-MM-dd HH:mm:ss Z"
         iso.locale = Locale(identifier: "en_US_POSIX")
