@@ -70,8 +70,6 @@ struct VPNStatusIconApp: App {
     private var menuContent: some View {
         statusSection
         Divider()
-        controlSection
-        Divider()
         utilitySection
     }
 
@@ -89,30 +87,6 @@ struct VPNStatusIconApp: App {
 
         if let since = monitor.connectedSince, monitor.state == .connected {
             Button("Connected: \(formattedDuration(since: since))") {}
-        }
-    }
-
-    @ViewBuilder
-    private var controlSection: some View {
-        switch monitor.state {
-        case .connected:
-            Button("Disconnect") {
-                monitor.disconnect()
-            }
-        case .disconnected:
-            Button("Connect") {
-                monitor.connect()
-            }
-        case .connecting:
-            Button("Connecting...") {}
-                .disabled(true)
-        case .disconnecting:
-            Button("Disconnecting...") {}
-                .disabled(true)
-        case .unknown:
-            Button("Connect") {
-                monitor.connect()
-            }
         }
     }
 

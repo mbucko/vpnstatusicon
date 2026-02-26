@@ -15,16 +15,13 @@ final class VPNStatusMonitor: ObservableObject {
     @Published var state: VPNState = .unknown
     @Published var ipAddress: String?
     @Published var connectedSince: Date?
-    @Published var userWantsDisconnected = false
     @Published var localIP: String?
     @Published var publicIP: String?
 
     private var timer: Timer?
-    private var disconnectEnforcerTimer: Timer?
     private let serviceName = "ExpressVPN Lightway"
 
     private static let normalInterval: TimeInterval = 3.0
-    private static let enforcerInterval: TimeInterval = 0.5
     private static let publicIPTTL: TimeInterval = 30.0
 
     private var lastPublicIPFetch: Date = .distantPast
@@ -38,22 +35,6 @@ final class VPNStatusMonitor: ObservableObject {
     func stopMonitoring() {
         timer?.invalidate()
         timer = nil
-        disconnectEnforcerTimer?.invalidate()
-        disconnectEnforcerTimer = nil
-    }
-
-    func connect() {
-        userWantsDisconnected = false
-        stopEnforcer()
-        runProcess("/usr/sbin/scutil", arguments: ["--nc", "start", serviceName])
-        scheduleCheck(after: 0.5)
-    }
-
-    func disconnect() {
-        userWantsDisconnected = true
-        runProcess("/usr/sbin/scutil", arguments: ["--nc", "stop", serviceName])
-        startEnforcer()
-        scheduleCheck(after: 0.5)
     }
 
     func checkStatus() {
@@ -63,46 +44,13 @@ final class VPNStatusMonitor: ObservableObject {
         refreshPublicIP()
     }
 
-    // MARK: - Disconnect enforcer
-
-    /// Rapid timer that keeps killing the VPN when on-demand reconnects
-    private func startEnforcer() {
-        disconnectEnforcerTimer?.invalidate()
-        disconnectEnforcerTimer = Timer.scheduledTimer(withTimeInterval: Self.enforcerInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.enforceDisconnect()
-            }
-        }
-    }
-
-    private func stopEnforcer() {
-        disconnectEnforcerTimer?.invalidate()
-        disconnectEnforcerTimer = nil
-    }
-
-    private func enforceDisconnect() {
-        let output = runProcess("/usr/sbin/scutil", arguments: ["--nc", "status", serviceName])
-        let firstLine = output.components(separatedBy: "\n").first?.trimmingCharacters(in: .whitespaces) ?? ""
-
-        if firstLine == "Connected" || firstLine == "Connecting" {
-            runProcess("/usr/sbin/scutil", arguments: ["--nc", "stop", serviceName])
-        }
-
-        parseStatus(output)
-    }
-
     // MARK: - Timers
 
     private func startNormalTimer() {
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: Self.normalInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                self.checkStatus()
-                // Catch late on-demand reconnects even after enforcer stops
-                if self.userWantsDisconnected && (self.state == .connected || self.state == .connecting) {
-                    self.runProcess("/usr/sbin/scutil", arguments: ["--nc", "stop", self.serviceName])
-                }
+                self?.checkStatus()
             }
         }
     }

@@ -1,14 +1,14 @@
 # VPNStatusIcon
 
-A lightweight macOS menu bar app that shows ExpressVPN connection status and provides quick connect/disconnect controls.
+A lightweight, read-only macOS menu bar app that shows ExpressVPN connection status.
 
 ## Features
 
 - Color-coded shield icon in the menu bar (green = connected, white = disconnected, yellow = transitioning)
 - Displays current IP address (click to copy) and connection duration
-- One-click connect/disconnect
-- Handles ExpressVPN's on-demand auto-reconnect — disconnect actually stays disconnected
-- Launch at Login support via LaunchAgent
+- Optional local/public IP display in the menu bar
+- Quick-launch ExpressVPN from menu
+- Launch at Login support
 - Menu-bar only (no Dock icon)
 
 ## Requirements
@@ -67,9 +67,7 @@ launchctl load ~/Library/LaunchAgents/com.mbucko.vpnstatusicon.plist
 
 ## How It Works
 
-Polls `scutil --nc status "ExpressVPN Lightway"` every 3 seconds and uses `scutil --nc start/stop` for connection control.
-
-When disconnecting, a rapid 0.5-second enforcer timer prevents ExpressVPN's VPN On Demand from auto-reconnecting. This is necessary because ExpressVPN sets `OnDemandEnabled: TRUE` with an unconditional connect rule, and there's no public API to toggle another app's on-demand configuration.
+Polls `scutil --nc status "ExpressVPN Lightway"` every 3 seconds to monitor connection state. Read-only — use ExpressVPN directly to connect/disconnect.
 
 ## License
 
