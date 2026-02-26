@@ -3,24 +3,21 @@ import ServiceManagement
 
 @main
 struct VPNStatusIconApp: App {
-    private var monitor = VPNStatusMonitor()
+    @State private var monitor = VPNStatusMonitor()
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @AppStorage("showVPNIP") private var showVPNIP = true
     @AppStorage("showLocalIP") private var showLocalIP = false
     @AppStorage("showPublicIP") private var showPublicIP = false
-    @AppStorage("vpnServiceName") private var vpnServiceName = "ExpressVPN Lightway"
     
-    @State private var availableServices: [String] = []
-
     var body: some Scene {
         MenuBarExtra {
             menuContent
         } label: {
-            menuBarLabelContent
+            menuBarIcon
         }
     }
 
-    @ViewBuilder
-    private var menuBarLabelContent: some View {
+    private var menuBarIcon: some View {
         HStack(spacing: 4) {
             if let label = menuBarLabelText {
                 Text(label)
@@ -29,12 +26,16 @@ struct VPNStatusIconApp: App {
         }
         .onAppear {
             monitor.startMonitoring()
-            updateAvailableServices()
         }
     }
 
     private var menuBarLabelText: String? {
         var parts: [String] = []
+        
+        if showVPNIP, monitor.state == .connected, let ip = monitor.ipAddress {
+            parts.append(ip)
+        }
+        
         if showLocalIP, let ip = monitor.localIP {
             parts.append(ip)
         }
@@ -54,13 +55,13 @@ struct VPNStatusIconApp: App {
             color = .systemGreen
         case .disconnected:
             symbolName = "shield.slash"
-            color = .secondaryLabelColor // Adaptive color for disconnected
+            color = .systemRed // Highly visible
         case .connecting, .disconnecting:
             symbolName = "shield.lefthalf.filled"
             color = .systemYellow
         case .unknown:
             symbolName = "shield.slash"
-            color = .tertiaryLabelColor
+            color = .systemGray
         }
 
         let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
@@ -72,11 +73,13 @@ struct VPNStatusIconApp: App {
 
     @ViewBuilder
     private var menuContent: some View {
-        statusSection
-        Divider()
-        vpnServiceSelectionSection
-        Divider()
-        utilitySection
+        Group {
+            statusSection
+            Divider()
+            controlSection
+            Divider()
+            utilitySection
+        }
     }
 
     @ViewBuilder
@@ -85,37 +88,39 @@ struct VPNStatusIconApp: App {
         Text("\(stateEmoji) \(monitor.state.rawValue)")
             .font(.headline)
 
-        if let ip = monitor.ipAddress {
-            Button("VPN IP: \(ip)") {
+        if monitor.state == .connected, let ip = monitor.publicIP {
+            Button(ip) {
                 copyToClipboard(ip)
             }
         }
 
         if let since = monitor.connectedSince, monitor.state == .connected {
-            Text("Connected for: \(formattedDuration(since: since))")
+            Text("Connected: \(formattedDuration(since: since))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
     }
 
     @ViewBuilder
-    private var vpnServiceSelectionSection: some View {
-        Menu("VPN Service: \(vpnServiceName)") {
-            if availableServices.isEmpty {
-                Button("Discovering...") {}
-                    .disabled(true)
-            } else {
-                ForEach(availableServices, id: \.self) { service in
-                    Button(service) {
-                        vpnServiceName = service
-                        monitor.serviceName = service
-                    }
-                    .symbolVariant(service == vpnServiceName ? .fill : .none)
-                }
+    private var controlSection: some View {
+        switch monitor.state {
+        case .connected:
+            Button("Disconnect") {
+                monitor.disconnect()
             }
-            Divider()
-            Button("Refresh Services") {
-                updateAvailableServices()
+        case .disconnected:
+            Button("Connect") {
+                monitor.connect()
+            }
+        case .connecting:
+            Button("Connecting...") {}
+                .disabled(true)
+        case .disconnecting:
+            Button("Disconnecting...") {}
+                .disabled(true)
+        case .unknown:
+            Button("Connect") {
+                monitor.connect()
             }
         }
     }
@@ -140,8 +145,9 @@ struct VPNStatusIconApp: App {
             }
 
         Menu("Settings") {
+            Toggle("Show ExpressVPN Tunnel in Menu Bar", isOn: $showVPNIP)
             Toggle("Show Local IP in Menu Bar", isOn: $showLocalIP)
-            Toggle("Show Public IP in Menu Bar", isOn: $showPublicIP)
+            Toggle("Show Public VPN IP in Menu Bar", isOn: $showPublicIP)
         }
 
         Divider()
@@ -151,12 +157,6 @@ struct VPNStatusIconApp: App {
             NSApplication.shared.terminate(nil)
         }
         .keyboardShortcut("q")
-    }
-
-    private func updateAvailableServices() {
-        Task {
-            availableServices = await monitor.getAvailableServices()
-        }
     }
 
     private func copyToClipboard(_ text: String) {

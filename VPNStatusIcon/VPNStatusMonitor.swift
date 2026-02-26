@@ -17,24 +17,19 @@ enum VPNState: String {
 final class VPNStatusMonitor {
     var state: VPNState = .unknown
     var ipAddress: String?
+    var interfaceName: String?
     var connectedSince: Date?
     var localIP: String?
     var publicIP: String?
     
-    // Configurable VPN service name (from UserDefaults)
-    var serviceName: String {
-        get { UserDefaults.standard.string(forKey: "vpnServiceName") ?? "ExpressVPN Lightway" }
-        set { 
-            UserDefaults.standard.set(newValue, forKey: "vpnServiceName")
-            checkStatus()
-        }
-    }
+    // Configurable VPN service name
+    let serviceName = "ExpressVPN Lightway"
 
     private var timer: Timer?
     private let pathMonitor = NWPathMonitor()
     private let pathMonitorQueue = DispatchQueue(label: "VPNStatusMonitorPathMonitor")
     
-    private static let fallbackInterval: TimeInterval = 60.0
+    private static let fallbackInterval: TimeInterval = 3.0
     private static let publicIPTTL: TimeInterval = 60.0
 
     private var lastPublicIPFetch: Date = .distantPast
@@ -78,24 +73,18 @@ final class VPNStatusMonitor {
         }
     }
 
-    // MARK: - Discovery
-
-    func getAvailableServices() async -> [String] {
-        let output = await runProcessAsync("/usr/sbin/scutil", arguments: ["--nc", "list"])
-        let lines = output.components(separatedBy: "\n")
-        var services: [String] = []
-        
-        // Line format: * (Disconnected) <UUID> VPN (com.xxx) "Name" [VPN:com.xxx]
-        for line in lines {
-            let parts = line.components(separatedBy: "\"")
-            if parts.count >= 3 {
-                let name = parts[1]
-                if !name.isEmpty {
-                    services.append(name)
-                }
-            }
+    func connect() {
+        Task {
+            await runProcessAsync("/usr/sbin/scutil", arguments: ["--nc", "start", serviceName])
+            checkStatus()
         }
-        return services.sorted()
+    }
+
+    func disconnect() {
+        Task {
+            await runProcessAsync("/usr/sbin/scutil", arguments: ["--nc", "stop", serviceName])
+            checkStatus()
+        }
     }
 
     // MARK: - Timers
@@ -146,17 +135,15 @@ final class VPNStatusMonitor {
 
         for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
             let addr = ptr.pointee
-            let flags = Int32(addr.ifa_flags)
-            let family = addr.ifa_addr.pointee.sa_family
+            guard addr.ifa_addr.pointee.sa_family == UInt8(AF_INET) else { continue }
+            let name = String(cString: addr.ifa_name)
+            guard name == "en0" else { continue }
 
-            // Filter for IPv4, Up, and not Loopback
-            if family == UInt8(AF_INET) && (flags & IFF_UP) != 0 && (flags & IFF_LOOPBACK) == 0 {
-                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-                if getnameinfo(addr.ifa_addr, socklen_t(addr.ifa_addr.pointee.sa_len),
-                               &hostname, socklen_t(hostname.count),
-                               nil, 0, NI_NUMERICHOST) == 0 {
-                    return String(cString: hostname)
-                }
+            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(addr.ifa_addr, socklen_t(addr.ifa_addr.pointee.sa_len),
+                           &hostname, socklen_t(hostname.count),
+                           nil, 0, NI_NUMERICHOST) == 0 {
+                return String(cString: hostname)
             }
         }
         return nil
@@ -186,6 +173,7 @@ final class VPNStatusMonitor {
         guard let firstLine = lines.first?.trimmingCharacters(in: .whitespaces) else {
             state = .unknown
             ipAddress = nil
+            interfaceName = nil
             connectedSince = nil
             return
         }
@@ -196,6 +184,7 @@ final class VPNStatusMonitor {
         case "Disconnected":
             state = .disconnected
             ipAddress = nil
+            interfaceName = nil
             connectedSince = nil
             return
         case "Connecting":
@@ -205,28 +194,29 @@ final class VPNStatusMonitor {
         default:
             state = .unknown
             ipAddress = nil
+            interfaceName = nil
             connectedSince = nil
             return
         }
 
-        // Improved IP parsing: find first IPv4 after "Addresses : <array>"
+        // Parse IP and Interface
         var inAddresses = false
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.hasPrefix("InterfaceName : ") {
+                interfaceName = trimmed.components(separatedBy: " : ").last
+            }
 
             if trimmed.hasPrefix("Addresses : <array>") {
                 inAddresses = true
                 continue
             }
             if inAddresses {
-                if trimmed.contains(":") && trimmed.components(separatedBy: ".").count >= 3 {
-                    if let value = trimmed.components(separatedBy: " : ").last {
-                        ipAddress = value
-                        inAddresses = false
-                    }
-                } else if trimmed == "}" {
-                    inAddresses = false
+                if trimmed.hasPrefix("0 : ") {
+                    ipAddress = String(trimmed.dropFirst(4))
                 }
+                inAddresses = false
             }
 
             if trimmed.hasPrefix("LastStatusChangeTime") {

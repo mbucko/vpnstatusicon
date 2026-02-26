@@ -1,15 +1,14 @@
 # VPNStatusIcon
 
-A lightweight, modern macOS menu bar app that shows VPN connection status for ExpressVPN and other services.
+A lightweight, modern macOS menu bar app that shows VPN connection status for ExpressVPN.
 
 ## Features
 
 - **Efficient Monitoring**: Uses `NWPathMonitor` for instant updates without constant polling.
-- **Auto-Discovery**: Automatically finds and lists all available VPN services on your Mac (ExpressVPN, Surfshark, Tailscale, etc.).
 - **Modern Tech**: Built with Swift 5.9, targeting macOS 14+, using the `Observation` framework and `async/await`.
-- **Dynamic Icons**: Color-coded shield icon (Green = Connected, Yellow = Transitioning, Gray = Disconnected).
-- **Network Info**: Shows VPN IP, Local IP, and Public IP in the menu bar.
-- **Copy IP**: Click any IP address in the menu to copy it to your clipboard.
+- **Dynamic Icons**: Color-coded shield icon (Green = Connected, Yellow = Transitioning, White = Disconnected).
+- **Network Info**: Choose to show ExpressVPN Tunnel (10.x), Local IP (en0), or Public VPN IP in the menu bar.
+- **Copy IP**: Click the Public VPN IP in the menu to copy it to your clipboard.
 - **Launch at Login**: Easily enable auto-start via a simple toggle.
 - **Stealthy**: Menu-bar only — no Dock icon.
 
@@ -35,7 +34,7 @@ open ~/Applications/VPNStatusIcon.app
 
 ## How It Works
 
-- **Trigger**: When your network path changes, the app uses `scutil --nc status` to check the current state of your selected VPN service.
+- **Trigger**: When your network path changes, the app uses `scutil --nc status` to check the current state of ExpressVPN.
 - **Process**: Status checks are performed asynchronously to prevent UI hitches.
 - **Network**: Local IP is detected by scanning all active network interfaces (not just `en0`). Public IP is fetched from `api.ipify.org` with a 60-second TTL cache.
 
