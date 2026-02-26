@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 import Darwin
+import Network
+import Observation
 
 enum VPNState: String {
     case connected = "Connected"
@@ -11,52 +13,96 @@ enum VPNState: String {
 }
 
 @MainActor
-final class VPNStatusMonitor: ObservableObject {
-    @Published var state: VPNState = .unknown
-    @Published var ipAddress: String?
-    @Published var connectedSince: Date?
-    @Published var localIP: String?
-    @Published var publicIP: String?
+@Observable
+final class VPNStatusMonitor {
+    var state: VPNState = .unknown
+    var ipAddress: String?
+    var connectedSince: Date?
+    var localIP: String?
+    var publicIP: String?
+    
+    // Configurable VPN service name (from UserDefaults)
+    var serviceName: String {
+        get { UserDefaults.standard.string(forKey: "vpnServiceName") ?? "ExpressVPN Lightway" }
+        set { 
+            UserDefaults.standard.set(newValue, forKey: "vpnServiceName")
+            checkStatus()
+        }
+    }
 
     private var timer: Timer?
-    private let serviceName = "ExpressVPN Lightway"
-
-    private static let normalInterval: TimeInterval = 3.0
-    private static let publicIPTTL: TimeInterval = 30.0
+    private let pathMonitor = NWPathMonitor()
+    private let pathMonitorQueue = DispatchQueue(label: "VPNStatusMonitorPathMonitor")
+    
+    private static let fallbackInterval: TimeInterval = 60.0
+    private static let publicIPTTL: TimeInterval = 60.0
 
     private var lastPublicIPFetch: Date = .distantPast
-    private var publicIPFetchInFlight = false
+    private var isChecking = false
 
     func startMonitoring() {
         checkStatus()
-        startNormalTimer()
+        
+        // Setup NWPathMonitor for efficient triggers
+        pathMonitor.pathUpdateHandler = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.checkStatus()
+            }
+        }
+        pathMonitor.start(queue: pathMonitorQueue)
+        
+        // Fallback timer (much longer)
+        startFallbackTimer()
     }
 
     func stopMonitoring() {
         timer?.invalidate()
         timer = nil
+        pathMonitor.cancel()
     }
 
     func checkStatus() {
-        let output = runProcess("/usr/sbin/scutil", arguments: ["--nc", "status", serviceName])
-        parseStatus(output)
-        refreshLocalIP()
-        refreshPublicIP()
+        guard !isChecking else { return }
+        isChecking = true
+        
+        Task {
+            defer { isChecking = false }
+            
+            // Run scutil in a background thread to avoid blocking UI
+            let output = await runProcessAsync("/usr/sbin/scutil", arguments: ["--nc", "status", serviceName])
+            
+            // Update properties (runs on MainActor because the class is @MainActor)
+            parseStatus(output)
+            refreshLocalIP()
+            refreshPublicIP()
+        }
+    }
+
+    // MARK: - Discovery
+
+    func getAvailableServices() async -> [String] {
+        let output = await runProcessAsync("/usr/sbin/scutil", arguments: ["--nc", "list"])
+        let lines = output.components(separatedBy: "\n")
+        var services: [String] = []
+        
+        // Line format: * (Disconnected) <UUID> VPN (com.xxx) "Name" [VPN:com.xxx]
+        for line in lines {
+            let parts = line.components(separatedBy: "\"")
+            if parts.count >= 3 {
+                let name = parts[1]
+                if !name.isEmpty {
+                    services.append(name)
+                }
+            }
+        }
+        return services.sorted()
     }
 
     // MARK: - Timers
 
-    private func startNormalTimer() {
+    private func startFallbackTimer() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: Self.normalInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.checkStatus()
-            }
-        }
-    }
-
-    private func scheduleCheck(after delay: TimeInterval) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        timer = Timer.scheduledTimer(withTimeInterval: Self.fallbackInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.checkStatus()
             }
@@ -65,8 +111,7 @@ final class VPNStatusMonitor: ObservableObject {
 
     // MARK: - Process
 
-    @discardableResult
-    private func runProcess(_ path: String, arguments: [String]) -> String {
+    private func runProcessAsync(_ path: String, arguments: [String]) async -> String {
         let process = Process()
         let pipe = Pipe()
         process.executableURL = URL(fileURLWithPath: path)
@@ -74,59 +119,62 @@ final class VPNStatusMonitor: ObservableObject {
         process.standardOutput = pipe
         process.standardError = pipe
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return ""
+        return await withCheckedContinuation { continuation in
+            do {
+                process.terminationHandler = { _ in
+                    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                    let output = String(data: data, encoding: .utf8) ?? ""
+                    continuation.resume(returning: output)
+                }
+                try process.run()
+            } catch {
+                continuation.resume(returning: "")
+            }
         }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
     }
 
     // MARK: - IP Fetching
 
     private func refreshLocalIP() {
-        localIP = getLocalIPAddress()
+        localIP = getPrimaryLocalIPAddress()
     }
 
-    private func getLocalIPAddress() -> String? {
+    private func getPrimaryLocalIPAddress() -> String? {
         var ifaddr: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&ifaddr) == 0, let firstAddr = ifaddr else { return nil }
         defer { freeifaddrs(ifaddr) }
 
         for ptr in sequence(first: firstAddr, next: { $0.pointee.ifa_next }) {
             let addr = ptr.pointee
-            guard addr.ifa_addr.pointee.sa_family == UInt8(AF_INET) else { continue }
-            let name = String(cString: addr.ifa_name)
-            guard name == "en0" else { continue }
+            let flags = Int32(addr.ifa_flags)
+            let family = addr.ifa_addr.pointee.sa_family
 
-            var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
-            if getnameinfo(addr.ifa_addr, socklen_t(addr.ifa_addr.pointee.sa_len),
-                           &hostname, socklen_t(hostname.count),
-                           nil, 0, NI_NUMERICHOST) == 0 {
-                return String(cString: hostname)
+            // Filter for IPv4, Up, and not Loopback
+            if family == UInt8(AF_INET) && (flags & IFF_UP) != 0 && (flags & IFF_LOOPBACK) == 0 {
+                var hostname = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(addr.ifa_addr, socklen_t(addr.ifa_addr.pointee.sa_len),
+                               &hostname, socklen_t(hostname.count),
+                               nil, 0, NI_NUMERICHOST) == 0 {
+                    return String(cString: hostname)
+                }
             }
         }
         return nil
     }
 
     private func refreshPublicIP() {
-        guard !publicIPFetchInFlight,
-              Date().timeIntervalSince(lastPublicIPFetch) >= Self.publicIPTTL else { return }
+        guard Date().timeIntervalSince(lastPublicIPFetch) >= Self.publicIPTTL else { return }
 
-        publicIPFetchInFlight = true
         Task {
-            defer { self.publicIPFetchInFlight = false }
             guard let url = URL(string: "https://api.ipify.org") else { return }
             do {
                 let (data, _) = try await URLSession.shared.data(from: url)
-                let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                self.publicIP = ip
-                self.lastPublicIPFetch = Date()
+                if let ip = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    self.publicIP = ip
+                    self.lastPublicIPFetch = Date()
+                }
             } catch {
-                // Keep previous value on failure
+                // Silently fail, keep old value
             }
         }
     }
@@ -161,7 +209,7 @@ final class VPNStatusMonitor: ObservableObject {
             return
         }
 
-        // Parse IP: look for "0 : <ip>" line right after "Addresses : <array> {"
+        // Improved IP parsing: find first IPv4 after "Addresses : <array>"
         var inAddresses = false
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
@@ -171,10 +219,14 @@ final class VPNStatusMonitor: ObservableObject {
                 continue
             }
             if inAddresses {
-                if trimmed.hasPrefix("0 : ") {
-                    ipAddress = String(trimmed.dropFirst(4))
+                if trimmed.contains(":") && trimmed.components(separatedBy: ".").count >= 3 {
+                    if let value = trimmed.components(separatedBy: " : ").last {
+                        ipAddress = value
+                        inAddresses = false
+                    }
+                } else if trimmed == "}" {
+                    inAddresses = false
                 }
-                inAddresses = false
             }
 
             if trimmed.hasPrefix("LastStatusChangeTime") {

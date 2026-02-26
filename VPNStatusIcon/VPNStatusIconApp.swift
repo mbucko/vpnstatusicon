@@ -3,20 +3,37 @@ import ServiceManagement
 
 @main
 struct VPNStatusIconApp: App {
-    @StateObject private var monitor = VPNStatusMonitor()
+    private var monitor = VPNStatusMonitor()
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @AppStorage("showLocalIP") private var showLocalIP = false
     @AppStorage("showPublicIP") private var showPublicIP = false
+    @AppStorage("vpnServiceName") private var vpnServiceName = "ExpressVPN Lightway"
+    
+    @State private var availableServices: [String] = []
 
     var body: some Scene {
         MenuBarExtra {
             menuContent
         } label: {
-            menuBarIcon
+            menuBarLabelContent
         }
     }
 
-    private var menuBarLabel: String? {
+    @ViewBuilder
+    private var menuBarLabelContent: some View {
+        HStack(spacing: 4) {
+            if let label = menuBarLabelText {
+                Text(label)
+            }
+            Image(nsImage: menuBarNSImage)
+        }
+        .onAppear {
+            monitor.startMonitoring()
+            updateAvailableServices()
+        }
+    }
+
+    private var menuBarLabelText: String? {
         var parts: [String] = []
         if showLocalIP, let ip = monitor.localIP {
             parts.append(ip)
@@ -25,18 +42,6 @@ struct VPNStatusIconApp: App {
             parts.append(ip)
         }
         return parts.isEmpty ? nil : parts.joined(separator: " | ")
-    }
-
-    private var menuBarIcon: some View {
-        HStack(spacing: 4) {
-            if let label = menuBarLabel {
-                Text(label)
-            }
-            Image(nsImage: menuBarNSImage)
-        }
-        .onAppear {
-            monitor.startMonitoring()
-        }
     }
 
     private var menuBarNSImage: NSImage {
@@ -49,26 +54,27 @@ struct VPNStatusIconApp: App {
             color = .systemGreen
         case .disconnected:
             symbolName = "shield.slash"
-            color = .white
+            color = .secondaryLabelColor // Adaptive color for disconnected
         case .connecting, .disconnecting:
             symbolName = "shield.lefthalf.filled"
             color = .systemYellow
         case .unknown:
             symbolName = "shield.slash"
-            color = .secondaryLabelColor
+            color = .tertiaryLabelColor
         }
 
         let config = NSImage.SymbolConfiguration(pointSize: 16, weight: .regular)
         let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "VPN Status")?
             .withSymbolConfiguration(config) ?? NSImage()
-        let coloredImage = image.image(with: color)
-        coloredImage.isTemplate = false
-        return coloredImage
+        
+        return image.tinted(with: color)
     }
 
     @ViewBuilder
     private var menuContent: some View {
         statusSection
+        Divider()
+        vpnServiceSelectionSection
         Divider()
         utilitySection
     }
@@ -76,17 +82,41 @@ struct VPNStatusIconApp: App {
     @ViewBuilder
     private var statusSection: some View {
         let stateEmoji = monitor.state == .connected ? "🟢" : "🔴"
-        Button("\(stateEmoji) \(monitor.state.rawValue)") {}
+        Text("\(stateEmoji) \(monitor.state.rawValue)")
+            .font(.headline)
 
         if let ip = monitor.ipAddress {
-            Button("IP: \(ip)") {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(ip, forType: .string)
+            Button("VPN IP: \(ip)") {
+                copyToClipboard(ip)
             }
         }
 
         if let since = monitor.connectedSince, monitor.state == .connected {
-            Button("Connected: \(formattedDuration(since: since))") {}
+            Text("Connected for: \(formattedDuration(since: since))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var vpnServiceSelectionSection: some View {
+        Menu("VPN Service: \(vpnServiceName)") {
+            if availableServices.isEmpty {
+                Button("Discovering...") {}
+                    .disabled(true)
+            } else {
+                ForEach(availableServices, id: \.self) { service in
+                    Button(service) {
+                        vpnServiceName = service
+                        monitor.serviceName = service
+                    }
+                    .symbolVariant(service == vpnServiceName ? .fill : .none)
+                }
+            }
+            Divider()
+            Button("Refresh Services") {
+                updateAvailableServices()
+            }
         }
     }
 
@@ -105,7 +135,6 @@ struct VPNStatusIconApp: App {
                         try SMAppService.mainApp.unregister()
                     }
                 } catch {
-                    // Revert on failure
                     launchAtLogin = !newValue
                 }
             }
@@ -124,13 +153,16 @@ struct VPNStatusIconApp: App {
         .keyboardShortcut("q")
     }
 
-    private var statusColor: Color {
-        switch monitor.state {
-        case .connected: return .green
-        case .disconnected: return .red
-        case .connecting, .disconnecting: return .yellow
-        case .unknown: return .gray
+    private func updateAvailableServices() {
+        Task {
+            availableServices = await monitor.getAvailableServices()
         }
+    }
+
+    private func copyToClipboard(_ text: String) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
     }
 
     private func formattedDuration(since date: Date) -> String {
@@ -141,17 +173,5 @@ struct VPNStatusIconApp: App {
             return "\(hours)h \(minutes)m"
         }
         return "\(minutes)m"
-    }
-}
-
-extension NSImage {
-    func image(with tintColor: NSColor) -> NSImage {
-        let image = self.copy() as! NSImage
-        image.lockFocus()
-        tintColor.set()
-        let imageRect = NSRect(origin: .zero, size: image.size)
-        imageRect.fill(using: .sourceAtop)
-        image.unlockFocus()
-        return image
     }
 }

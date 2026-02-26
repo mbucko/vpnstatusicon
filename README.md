@@ -1,73 +1,47 @@
 # VPNStatusIcon
 
-A lightweight, read-only macOS menu bar app that shows ExpressVPN connection status.
+A lightweight, modern macOS menu bar app that shows VPN connection status for ExpressVPN and other services.
 
 ## Features
 
-- Color-coded shield icon in the menu bar (green = connected, white = disconnected, yellow = transitioning)
-- Displays current IP address (click to copy) and connection duration
-- Optional local/public IP display in the menu bar
-- Quick-launch ExpressVPN from menu
-- Launch at Login support
-- Menu-bar only (no Dock icon)
+- **Efficient Monitoring**: Uses `NWPathMonitor` for instant updates without constant polling.
+- **Auto-Discovery**: Automatically finds and lists all available VPN services on your Mac (ExpressVPN, Surfshark, Tailscale, etc.).
+- **Modern Tech**: Built with Swift 5.9, targeting macOS 14+, using the `Observation` framework and `async/await`.
+- **Dynamic Icons**: Color-coded shield icon (Green = Connected, Yellow = Transitioning, Gray = Disconnected).
+- **Network Info**: Shows VPN IP, Local IP, and Public IP in the menu bar.
+- **Copy IP**: Click any IP address in the menu to copy it to your clipboard.
+- **Launch at Login**: Easily enable auto-start via a simple toggle.
+- **Stealthy**: Menu-bar only — no Dock icon.
 
 ## Requirements
 
-- macOS 14+
-- ExpressVPN with the "ExpressVPN Lightway" network service configured
+- macOS 14.0 or later
 
 ## Build & Install
 
 ```bash
+# Build the release binary
 swift build -c release
 
-# Create app bundle
+# Create a proper App Bundle
 mkdir -p ~/Applications/VPNStatusIcon.app/Contents/MacOS
+mkdir -p ~/Applications/VPNStatusIcon.app/Contents/Resources
 cp .build/release/VPNStatusIcon ~/Applications/VPNStatusIcon.app/Contents/MacOS/
 cp VPNStatusIcon/Info.plist ~/Applications/VPNStatusIcon.app/Contents/
 
-# Launch
+# Open the app
 open ~/Applications/VPNStatusIcon.app
-```
-
-Or open in Xcode:
-
-```bash
-open Package.swift
-```
-
-## Auto-Start on Login
-
-Create `~/Library/LaunchAgents/com.mbucko.vpnstatusicon.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.mbucko.vpnstatusicon</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/bin/open</string>
-        <string>-a</string>
-        <string>/Users/YOUR_USERNAME/Applications/VPNStatusIcon.app</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-</dict>
-</plist>
-```
-
-Then load it:
-
-```bash
-launchctl load ~/Library/LaunchAgents/com.mbucko.vpnstatusicon.plist
 ```
 
 ## How It Works
 
-Polls `scutil --nc status "ExpressVPN Lightway"` every 3 seconds to monitor connection state. Read-only — use ExpressVPN directly to connect/disconnect.
+- **Trigger**: When your network path changes, the app uses `scutil --nc status` to check the current state of your selected VPN service.
+- **Process**: Status checks are performed asynchronously to prevent UI hitches.
+- **Network**: Local IP is detected by scanning all active network interfaces (not just `en0`). Public IP is fetched from `api.ipify.org` with a 60-second TTL cache.
+
+## Troubleshooting
+
+If "Launch at Login" doesn't work, ensure you have built the `.app` bundle as described above and moved it to your `/Applications` or `~/Applications` folder. The `SMAppService` requires the app to have a valid bundle identifier (`com.mbucko.VPNStatusIcon`) and be located in a standard application directory.
 
 ## License
 
